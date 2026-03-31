@@ -31,6 +31,7 @@ class Signal:
     atr: float
     session: SessionType
     candle_index: int
+    atr_ratio: float = 0.0
 
 
 @dataclass

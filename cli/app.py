@@ -68,6 +68,8 @@ def backtest_run(
     breakeven_atr_mult: float = typer.Option(1.0, help="Breakeven a N x ATR"),
     regime_filter: bool = typer.Option(False, help="Activer filtre de session"),
     sessions: str = typer.Option("sge_open,london,overlap", help="Sessions autorisees"),
+    atr_ratio_filter: bool = typer.Option(False, help="Activer filtre ATR ratio"),
+    atr_ratio_threshold: float = typer.Option(0.15, help="Seuil ATR ratio M5/H1"),
 ):
     from core.types import BacktestConfig
     from backtest.engine import run_backtest
@@ -85,6 +87,8 @@ def backtest_run(
         breakeven_atr_mult=breakeven_atr_mult,
         use_session_filter=regime_filter,
         allowed_sessions=sessions.split(","),
+        use_atr_ratio_filter=atr_ratio_filter,
+        atr_ratio_threshold=atr_ratio_threshold,
     )
 
     trades, metrics = run_backtest(config, start, end)
