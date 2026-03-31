@@ -1,0 +1,49 @@
+﻿
+============================================================
+venv\Scripts\python.exe : 
+Traceback (most recent call last):
+Au caractère Ligne:1 : 1
++ venv\Scripts\python.exe 
+scripts\quick_backtest.py --start 
+2025-01-01  ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~
+    + CategoryInfo          : Not 
+   Specified: (Traceback (most r  
+  ecent call last)::String) [],   
+  RemoteException
+    + FullyQualifiedErrorId : Nat 
+   iveCommandError
+ 
+  File "C:\Users\pulsy\Pictures\z_
+trading\scripts\quick_backtest.py"
+, line 61, in <module>
+    quick_single(args.start, 
+args.end)
+  File "C:\Users\pulsy\Pictures\z_
+trading\scripts\quick_backtest.py"
+, line 38, in quick_single
+    trades, metrics = 
+run_backtest(config, start, end, 
+resolution="auto")
+                      ^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^
+  File "C:\Users\pulsy\Pictures\z_
+trading\backtest\engine.py", line 
+62, in run_backtest
+    print(f"  Backtest 
+{config.symbol} | {start} \u2192 
+{end}")
+  File "C:\Python312\Lib\encodings
+\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(i
+nput,self.errors,encoding_table)[0
+]
+           ^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' 
+codec can't encode character 
+'\u2192' in position 31: 
+character maps to <undefined>

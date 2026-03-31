@@ -15,7 +15,13 @@ def detect_session(t: pd.Timestamp) -> SessionType:
 def detect_breakouts(df: pd.DataFrame,
                      ema_period: int = 20,
                      atr_period: int = 14,
-                     multiplier: float = 2.0) -> list[Signal]:
+                     multiplier: float = 2.0,
+                     candle_minutes: int = 5) -> list[Signal]:
+    """
+    Détecte les cassures Keltner sur le DataFrame fourni.
+    candle_minutes: durée d'une bougie en minutes (1 pour M1, 5 pour M5, 15 pour M15...)
+                    Utilisé pour décaler le signal à l'ouverture de la prochaine bougie.
+    """
     df = compute_keltner(df, ema_period, atr_period, multiplier)
     signals = []
 
@@ -31,8 +37,10 @@ def detect_breakouts(df: pd.DataFrame,
 
         if row["close"] > row["kc_upper"] and prev["close"] <= prev["kc_upper"]:
             if not in_breakout or last_direction != Direction.LONG:
+                # Entry at NEXT candle open: offset = 1 période pour éviter le look-ahead
+                next_time = row["time"] + pd.Timedelta(minutes=candle_minutes)
                 signals.append(Signal(
-                    time=row["time"],
+                    time=next_time,
                     direction=Direction.LONG,
                     price=row["close"],
                     keltner_band=row["kc_upper"],
@@ -45,8 +53,9 @@ def detect_breakouts(df: pd.DataFrame,
 
         elif row["close"] < row["kc_lower"] and prev["close"] >= prev["kc_lower"]:
             if not in_breakout or last_direction != Direction.SHORT:
+                next_time = row["time"] + pd.Timedelta(minutes=candle_minutes)
                 signals.append(Signal(
-                    time=row["time"],
+                    time=next_time,
                     direction=Direction.SHORT,
                     price=row["close"],
                     keltner_band=row["kc_lower"],

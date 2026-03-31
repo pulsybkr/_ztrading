@@ -63,17 +63,21 @@ class Trade:
 class BacktestConfig:
     symbol: str = "XAUUSD"
     lot_size: float = 0.01
-    initial_balance: float = 10_000.0
+    initial_balance: float = 100.0   # compte réel ~50-100 EUR
     point_value: float = 0.01
     contract_size: float = 100
+
+    signal_timeframe: str = "M5"  # Timeframe des signaux: M1, M5, M15, M30, H1
 
     keltner_ema_period: int = 20
     keltner_atr_period: int = 14
     keltner_multiplier: float = 2.0
 
-    sl_atr_mult: float = 2.0
-    breakeven_atr_mult: float = 1.0
-    trailing_atr_mult: float = 1.5
+    # SL serré (1x ATR) : ~$3 de risque max par trade sur 0.01 lot
+    # Évite les trades qui traînent 4h sans toucher le SL
+    sl_atr_mult: float = 1.0
+    breakeven_atr_mult: float = 0.5
+    trailing_atr_mult: float = 0.75
     trailing_step_points: int = 10
 
     spread: float = 0.20
@@ -84,6 +88,8 @@ class BacktestConfig:
     use_atr_ratio_filter: bool = False
     atr_ratio_threshold: float = 0.15
     allowed_sessions: list = field(default_factory=lambda: ["sge_open", "london", "overlap"])
+    max_positions: int = 1
+    max_daily_trades: int = 10
 
     use_ml_filter: bool = False
     ml_threshold: float = 0.62

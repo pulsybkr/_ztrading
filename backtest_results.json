@@ -1,0 +1,144 @@
+{
+  "timestamp": "2026-03-31T20:04:51.535525",
+  "period": "2025-01-01 -> 2025-12-31",
+  "results": {
+    "1_baseline": {
+      "total_trades": 2139,
+      "winning_trades": 1467,
+      "losing_trades": 672,
+      "winrate": 68.6,
+      "profit_factor": 8.68,
+      "net_profit": 7613.79,
+      "expectancy": 3.56,
+      "avg_win": 5.87,
+      "avg_loss": -1.48,
+      "max_drawdown": -36.58,
+      "max_drawdown_pct": -0.24,
+      "sharpe_ratio": 7.95,
+      "total_commissions": 556.12,
+      "final_balance": 17613.79,
+      "total_signals": 2961,
+      "signals_filtered": 0,
+      "resolution_stats": {
+        "ticks": 2135,
+        "m1": 0,
+        "m5": 4,
+        "skipped": 0
+      },
+      "session_stats": {
+        "sge_open": {
+          "count": 151,
+          "winrate": 63.576158940397356,
+          "profit_factor": 6.903659428147252,
+          "net_pnl": 461.4760652523363
+        },
+        "london": {
+          "count": 305,
+          "winrate": 67.21311475409836,
+          "profit_factor": 5.89281648785963,
+          "net_pnl": 898.205710142306
+        },
+        "overlap": {
+          "count": 462,
+          "winrate": 70.995670995671,
+          "profit_factor": 12.282493095733097,
+          "net_pnl": 1712.749209605258
+        },
+        "off_session": {
+          "count": 1221,
+          "winrate": 68.63226863226863,
+          "profit_factor": 8.851945277958269,
+          "net_pnl": 4541.357877445122
+        }
+      }
+    },
+    "2_session_filter": {
+      "total_trades": 963,
+      "winning_trades": 660,
+      "losing_trades": 303,
+      "winrate": 68.5,
+      "profit_factor": 8.62,
+      "net_profit": 3207.78,
+      "expectancy": 3.33,
+      "avg_win": 5.5,
+      "avg_loss": -1.39,
+      "max_drawdown": -27.87,
+      "max_drawdown_pct": -0.23,
+      "sharpe_ratio": 7.79,
+      "total_commissions": 250.24,
+      "final_balance": 13207.78,
+      "total_signals": 2961,
+      "signals_filtered": 1812,
+      "resolution_stats": {
+        "ticks": 963,
+        "m1": 0,
+        "m5": 0,
+        "skipped": 0
+      },
+      "session_stats": {
+        "sge_open": {
+          "count": 161,
+          "winrate": 65.21739130434783,
+          "profit_factor": 7.423781477420928,
+          "net_pnl": 502.4118778945825
+        },
+        "london": {
+          "count": 318,
+          "winrate": 66.35220125786164,
+          "profit_factor": 5.890138356301556,
+          "net_pnl": 915.2589961255785
+        },
+        "overlap": {
+          "count": 484,
+          "winrate": 71.07438016528926,
+          "profit_factor": 12.517450086914433,
+          "net_pnl": 1790.1049426451714
+        }
+      }
+    },
+    "3_session+atr_ratio": {
+      "total_trades": 946,
+      "winning_trades": 650,
+      "losing_trades": 296,
+      "winrate": 68.7,
+      "profit_factor": 8.56,
+      "net_profit": 3171.56,
+      "expectancy": 3.35,
+      "avg_win": 5.52,
+      "avg_loss": -1.42,
+      "max_drawdown": -27.84,
+      "max_drawdown_pct": -0.23,
+      "sharpe_ratio": 7.79,
+      "total_commissions": 245.78,
+      "final_balance": 13171.56,
+      "total_signals": 2961,
+      "signals_filtered": 1833,
+      "resolution_stats": {
+        "ticks": 946,
+        "m1": 0,
+        "m5": 0,
+        "skipped": 0
+      },
+      "session_stats": {
+        "sge_open": {
+          "count": 146,
+          "winrate": 65.75342465753424,
+          "profit_factor": 7.124865272325031,
+          "net_pnl": 471.72381516834366
+        },
+        "london": {
+          "count": 316,
+          "winrate": 66.13924050632912,
+          "profit_factor": 5.8574133253158465,
+          "net_pnl": 909.9584501014825
+        },
+        "overlap": {
+          "count": 484,
+          "winrate": 71.28099173553719,
+          "profit_factor": 12.524468929002449,
+          "net_pnl": 1789.8751512503288
+        }
+      }
+    }
+  }
+}

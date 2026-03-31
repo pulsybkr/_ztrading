@@ -135,21 +135,27 @@ def resolve_with_ticks(signal: Signal, ticks: pd.DataFrame,
 
 def resolve_with_candles(signal: Signal, candles_m1: pd.DataFrame,
                          config: BacktestConfig, cost_model: CostModel) -> Trade:
+    # Apply spread to simulate realistic bid/ask from OHLC candles.
+    # LONG: enter at ask (price + spread), monitor sl/trailing against bid (price).
+    # SHORT: enter at bid (price - spread), monitor sl/trailing against ask (price).
+    sp = cost_model.spread
     pseudo_ticks = []
     for _, candle in candles_m1.iterrows():
+        o, h, l, c = candle["open"], candle["high"], candle["low"], candle["close"]
+        t = candle["time"]
         if signal.direction == Direction.LONG:
             pseudo_ticks.extend([
-                {"time": candle["time"], "bid": candle["open"], "ask": candle["open"]},
-                {"time": candle["time"], "bid": candle["low"],  "ask": candle["low"]},
-                {"time": candle["time"], "bid": candle["high"], "ask": candle["high"]},
-                {"time": candle["time"], "bid": candle["close"],"ask": candle["close"]},
+                {"time": t, "bid": o,     "ask": o + sp},
+                {"time": t, "bid": l,     "ask": l + sp},
+                {"time": t, "bid": h,     "ask": h + sp},
+                {"time": t, "bid": c,     "ask": c + sp},
             ])
         else:
             pseudo_ticks.extend([
-                {"time": candle["time"], "bid": candle["open"], "ask": candle["open"]},
-                {"time": candle["time"], "bid": candle["high"], "ask": candle["high"]},
-                {"time": candle["time"], "bid": candle["low"],  "ask": candle["low"]},
-                {"time": candle["time"], "bid": candle["close"],"ask": candle["close"]},
+                {"time": t, "bid": o - sp, "ask": o},
+                {"time": t, "bid": h - sp, "ask": h},
+                {"time": t, "bid": l - sp, "ask": l},
+                {"time": t, "bid": c - sp, "ask": c},
             ])
 
     pseudo_df = pd.DataFrame(pseudo_ticks)
