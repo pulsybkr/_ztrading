@@ -1,7 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(find C:/Users/pulsy/Pictures/z_trading -name \"*.pyc\" -not -path \"*/venv/*\" -delete)",
+      "Bash(find C:/Users/pulsy/Pictures/z_trading -name \"__pycache__\" -not -path \"*/venv/*\" -type d -empty -delete)",
+      "Bash(venv/Scripts/python.exe -m cli.app backtest run --help)"
     ]
   }
 }

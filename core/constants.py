@@ -1,9 +1,9 @@
 from datetime import time
 
 SESSIONS = {
-    "sge_open": (time(1, 30), time(3, 0)),
-    "london":   (time(8, 0),  time(10, 30)),
-    "overlap":  (time(12, 0), time(16, 30)),
+    "asian":   (time(0, 0),  time(7, 45)),
+    "london":  (time(8, 0),  time(10, 30)),
+    "overlap": (time(13, 0), time(16, 30)),
 }
 
 XAUUSD = {

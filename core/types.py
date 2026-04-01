@@ -16,7 +16,7 @@ class TradeResult(Enum):
 
 
 class SessionType(Enum):
-    SGE_OPEN = "sge_open"
+    ASIAN = "asian"
     LONDON = "london"
     OVERLAP = "overlap"
     OFF_SESSION = "off_session"
@@ -87,7 +87,7 @@ class BacktestConfig:
     use_session_filter: bool = False
     use_atr_ratio_filter: bool = False
     atr_ratio_threshold: float = 0.15
-    allowed_sessions: list = field(default_factory=lambda: ["sge_open", "london", "overlap"])
+    allowed_sessions: list = field(default_factory=lambda: ["asian", "london", "overlap"])
     max_positions: int = 1
     max_daily_trades: int = 10
 

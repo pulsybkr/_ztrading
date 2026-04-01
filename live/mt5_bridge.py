@@ -1,7 +1,18 @@
 import MetaTrader5 as mt5
+import pandas as pd
 from core.types import Signal, Direction, BacktestConfig
 from datetime import datetime
 from typing import Optional
+
+MT5_TIMEFRAMES = {
+    "M1": mt5.TIMEFRAME_M1,
+    "M5": mt5.TIMEFRAME_M5,
+    "M15": mt5.TIMEFRAME_M15,
+    "M30": mt5.TIMEFRAME_M30,
+    "H1": mt5.TIMEFRAME_H1,
+    "H4": mt5.TIMEFRAME_H4,
+    "D1": mt5.TIMEFRAME_D1,
+}
 
 
 class MT5Bridge:
@@ -11,6 +22,18 @@ class MT5Bridge:
         self.positions = []
 
     def connect(self, login: int = None, password: str = None, server: str = None) -> bool:
+        # Fall back to .env if credentials not provided
+        if not login or not password or not server:
+            try:
+                from dotenv import load_dotenv
+                import os
+                load_dotenv()
+                login = login or (int(os.getenv("MT5_LOGIN")) if os.getenv("MT5_LOGIN") else None)
+                password = password or os.getenv("MT5_PASSWORD")
+                server = server or os.getenv("MT5_SERVER")
+            except Exception:
+                pass
+
         if not mt5.initialize():
             print(f"MT5 init failed: {mt5.last_error()}")
             return False
@@ -140,22 +163,26 @@ class MT5Bridge:
                 continue
 
             if pos.type == mt5.POSITION_TYPE_BUY:
-                current_pnl = (tick["bid"] - pos.price_open) * pos.volume
-                if current_pnl > 0:
-                    be_level = pos.price_open + self.config.breakeven_atr_mult * (pos.sl - pos.price_open)
-                    new_sl = tick["bid"] - self.config.trailing_atr_mult * (pos.sl - pos.price_open)
-                    if tick["bid"] > be_level and new_sl > pos.sl + 0.10:
-                        if self._modify_sl(pos.ticket, new_sl):
-                            updated += 1
+                sl_distance = pos.price_open - pos.sl  # positive: SL is below entry
+                if sl_distance <= 0:
+                    continue
+                be_level = pos.price_open + self.config.breakeven_atr_mult * sl_distance
+                new_sl = tick["bid"] - self.config.trailing_atr_mult * sl_distance
+                # Only move SL up (never down), must stay below current bid
+                if tick["bid"] > be_level and new_sl > pos.sl + 0.10 and new_sl < tick["bid"]:
+                    if self._modify_sl(pos.ticket, new_sl):
+                        updated += 1
 
             elif pos.type == mt5.POSITION_TYPE_SELL:
-                current_pnl = (pos.price_open - tick["ask"]) * pos.volume
-                if current_pnl > 0:
-                    be_level = pos.price_open - self.config.breakeven_atr_mult * (pos.price_open - pos.sl)
-                    new_sl = tick["ask"] + self.config.trailing_atr_mult * (pos.price_open - pos.sl)
-                    if tick["ask"] < be_level and new_sl < pos.sl - 0.10:
-                        if self._modify_sl(pos.ticket, new_sl):
-                            updated += 1
+                sl_distance = pos.sl - pos.price_open  # positive: SL is above entry
+                if sl_distance <= 0:
+                    continue
+                be_level = pos.price_open - self.config.breakeven_atr_mult * sl_distance
+                new_sl = tick["ask"] + self.config.trailing_atr_mult * sl_distance
+                # Only move SL down (never up), must stay above current ask
+                if tick["ask"] < be_level and new_sl < pos.sl - 0.10 and new_sl > tick["ask"]:
+                    if self._modify_sl(pos.ticket, new_sl):
+                        updated += 1
 
         return updated
 
@@ -177,6 +204,19 @@ class MT5Bridge:
             mt5.shutdown()
             self.connected = False
             print("MT5 deconnecte")
+
+    def get_candles(self, symbol: str = None, timeframe: str = "M5", count: int = 100) -> pd.DataFrame:
+        """Fetch recent candles directly from MT5 (for live use)."""
+        if symbol is None:
+            symbol = self.config.symbol
+        tf = MT5_TIMEFRAMES.get(timeframe.upper(), mt5.TIMEFRAME_M5)
+        rates = mt5.copy_rates_from_pos(symbol, tf, 0, count)
+        if rates is None or len(rates) == 0:
+            return pd.DataFrame()
+        df = pd.DataFrame(rates)
+        df["time"] = pd.to_datetime(df["time"], unit="s")
+        df = df.rename(columns={"tick_volume": "tick_volume"})
+        return df
 
     def get_account_info(self) -> dict:
         info = mt5.account_info()

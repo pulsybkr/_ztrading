@@ -30,6 +30,7 @@ def run_backtest(
     data_dir: str = "data/parquet",
     verbose: bool = True,
     resolution: str = "auto",  # "ticks", "m1", "m5", "auto"
+    show_trades: bool = True,  # False = n'affiche pas chaque trade (utile pour M1)
 ) -> tuple[list[Trade], dict]:
     """
     Lance un backtest complet, chunk par chunk.
@@ -55,24 +56,41 @@ def run_backtest(
     # Durée d'une bougie en minutes (détermine le décalage signal → entrée)
     candle_minutes = TIMEFRAME_MINUTES.get(config.signal_timeframe, 5)
 
-    # Load ML model once if filter is enabled
-    # Le modèle ML est entraîné sur des features M5 — inutilisable sur d'autres timeframes
+    # Load ML model — cherche d'abord model_{TF}.joblib, puis model.joblib (legacy M5)
     ml_model = None
     ml_feature_names = None
     if config.use_ml_filter:
-        if config.signal_timeframe != "M5":
-            print(f"  [yellow]Filtre ML ignoré : modèle entraîné sur M5, "
-                  f"timeframe actuel={config.signal_timeframe}[/yellow]")
-        else:
+        tf = config.signal_timeframe
+        model_paths = [
+            f"ml/models/model_{tf}.joblib",
+            "ml/models/model.joblib",  # legacy M5
+        ]
+        loaded = False
+        for model_path in model_paths:
             try:
                 from ml.trainer import load_model
-                ml_model, _ = load_model("ml/models/model.joblib")
+                ml_model, metadata = load_model(model_path)
+                trained_tf = metadata.get("signal_timeframe", "M5")
+                if trained_tf != tf:
+                    print(f"  [yellow]Filtre ML ignoré : modèle entraîné sur {trained_tf}, "
+                          f"timeframe actuel={tf}[/yellow]")
+                    ml_model = None
+                    break
                 from ml.features import FEATURE_COLUMNS
                 ml_feature_names = FEATURE_COLUMNS
                 if verbose:
-                    print(f"  Filtre ML activé (seuil={config.ml_threshold})")
+                    print(f"  Filtre ML [{tf}] activé (seuil={config.ml_threshold}, "
+                          f"modèle: {model_path})")
+                loaded = True
+                break
+            except FileNotFoundError:
+                continue
             except Exception as e:
                 print(f"  [yellow]Filtre ML ignoré : {e}[/yellow]")
+                break
+        if not loaded and ml_model is None and config.use_ml_filter:
+            print(f"  [yellow]Filtre ML ignoré : aucun modèle trouvé pour {tf} "
+                  f"(entraîner avec: train run --timeframe {tf})[/yellow]")
 
     all_trades: list[Trade] = []
     total_signals = 0
@@ -217,7 +235,7 @@ def run_backtest(
             position_exit_time = trade.exit_time
             daily_trade_count[day_key] += 1
 
-            if verbose:
+            if verbose and show_trades:
                 color = "green" if trade.net_pnl > 0 else "red"
                 dir_str = "LONG" if trade.direction == Direction.LONG else "SHORT"
                 res_tag = f"[{used_resolution}]"
@@ -244,12 +262,78 @@ def run_backtest(
     }
 
     if verbose:
+        # N'affiche M1 fine-résolution que si le signal n'est pas déjà M1
+        m1_part = f"M1={resolution_stats['m1']}, " if config.signal_timeframe != "M1" else ""
         print(f"\n📈 Résolution utilisée: ticks={resolution_stats['ticks']}, "
-              f"M1={resolution_stats['m1']}, {config.signal_timeframe}={resolution_stats['signal']}, "
+              f"{m1_part}{config.signal_timeframe}={resolution_stats['signal']}, "
               f"skip={resolution_stats['skipped']}")
         print_report(all_trades, metrics, config)
 
     return all_trades, metrics
+
+
+def _backtest_worker(args: tuple):
+    """
+    Worker picklable pour ProcessPoolExecutor.
+    Doit être défini au niveau module (pas de lambda ni fonction imbriquée).
+    """
+    name, config, start, end, data_dir, resolution = args
+    try:
+        trades, metrics = run_backtest(
+            config, start, end,
+            data_dir=data_dir,
+            verbose=False,
+            resolution=resolution,
+        )
+        return name, trades, metrics
+    except Exception as e:
+        return name, [], {"error": str(e)}
+
+
+def run_parallel_backtests(
+    named_configs: dict,
+    start: str,
+    end: str,
+    data_dir: str = "data/parquet",
+    resolution: str = "auto",
+    max_workers: int = None,
+) -> dict:
+    """
+    Lance plusieurs backtests en parallèle via ProcessPoolExecutor.
+
+    Args:
+        named_configs: {"nom": BacktestConfig, ...}
+        max_workers: None = nb de cœurs CPU disponibles
+
+    Returns:
+        {"nom": {"trades": [...], "metrics": {...}}, ...}
+    """
+    import os
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
+    if max_workers is None:
+        max_workers = min(len(named_configs), os.cpu_count() or 4)
+
+    args_list = [
+        (name, config, start, end, data_dir, resolution)
+        for name, config in named_configs.items()
+    ]
+
+    results = {}
+    print(f"\n⚡ Lancement de {len(args_list)} backtests en parallèle ({max_workers} workers)...")
+
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_backtest_worker, args): args[0] for args in args_list}
+        for future in as_completed(futures):
+            name, trades, metrics = future.result()
+            results[name] = {"trades": trades, "metrics": metrics}
+            status = "✅" if "error" not in metrics else "❌"
+            n = metrics.get("total_trades", 0)
+            pnl = metrics.get("net_profit", 0)
+            print(f"  {status} {name} → {n} trades | P/L: ${pnl:+.2f}")
+
+    # Remettre dans l'ordre original
+    return {name: results[name] for name in named_configs if name in results}
 
 
 def run_comparison(
@@ -257,14 +341,18 @@ def run_comparison(
     end: str,
     data_dir: str = "data/parquet",
     resolution: str = "auto",
+    signal_timeframe: str = "M5",
+    max_workers: int = None,
 ) -> dict:
     """
-    Lance les backtests comparatifs :
+    Lance les backtests comparatifs séquentiellement :
     1. Baseline (Keltner seul)
     2. + Filtre session
     3. + Filtre session + ATR ratio
-    4. + ML (si modèle disponible)
-    
+
+    Note: séquentiel par design — évite les blocages Windows avec Numba+multiprocessing.
+    Utiliser run_parallel_backtests() directement pour les grid search.
+
     Returns:
         dict avec les résultats de chaque configuration
     """
@@ -274,14 +362,17 @@ def run_comparison(
 
     configs = {
         "1_baseline": BacktestConfig(
+            signal_timeframe=signal_timeframe,
             use_session_filter=False,
             use_atr_ratio_filter=False,
         ),
         "2_session": BacktestConfig(
+            signal_timeframe=signal_timeframe,
             use_session_filter=True,
             use_atr_ratio_filter=False,
         ),
         "3_session+atr": BacktestConfig(
+            signal_timeframe=signal_timeframe,
             use_session_filter=True,
             use_atr_ratio_filter=True,
             atr_ratio_threshold=0.15,
@@ -289,19 +380,22 @@ def run_comparison(
     }
 
     results = {}
+    total = len(configs)
 
-    for name, config in configs.items():
-        console.print(f"\n{'=' * 60}")
-        console.print(f"  [bold cyan]Config: {name}[/bold cyan]")
-        console.print(f"{'=' * 60}")
-
+    for i, (name, config) in enumerate(configs.items(), 1):
+        console.print(f"\n[bold cyan][{i}/{total}] {name}[/bold cyan]")
         trades, metrics = run_backtest(
             config, start, end,
             data_dir=data_dir,
             verbose=True,
+            show_trades=False,  # Pas de trade par trade dans le comparatif
             resolution=resolution,
         )
         results[name] = {"trades": trades, "metrics": metrics}
+        if "error" not in metrics:
+            console.print(f"  ✅ {metrics['total_trades']} trades | "
+                          f"PF={metrics['profit_factor']:.2f} | "
+                          f"P/L=${metrics['net_profit']:+.2f}")
 
     # Summary table
     console.print(f"\n\n{'=' * 80}")

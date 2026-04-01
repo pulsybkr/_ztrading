@@ -115,13 +115,135 @@ def export_ticks(symbol: str, start: datetime, end: datetime,
     print(f"\n📊 Total ticks exportés: {total_ticks:,}")
 
 
+# ─── Candle Reconstruction from Ticks ───────────────────────
+
+RESAMPLE_MAP = {
+    "M1": "1min",
+    "M2": "2min",
+    "M3": "3min",
+    "M5": "5min",
+    "M10": "10min",
+    "M15": "15min",
+    "M30": "30min",
+    "H1": "1h",
+    "H4": "4h",
+}
+
+
+def build_candles_from_ticks(
+    ticks_dir: str = "data/parquet/ticks",
+    candles_dir: str = "data/parquet/candles",
+    symbol: str = "XAUUSD",
+    timeframe: str = "M1",
+    start: datetime = None,
+    end: datetime = None,
+):
+    """
+    Reconstruit les bougies OHLC à partir des fichiers tick existants.
+    1 fichier tick mensuel → 1 fichier bougie mensuel.
+    Skip automatique si le fichier bougie existe déjà.
+
+    Utilise le prix bid pour OHLC (standard forex/gold).
+    Volume = nombre de ticks dans la période.
+    """
+    if timeframe not in RESAMPLE_MAP:
+        raise ValueError(f"Timeframe inconnu: {timeframe}. Disponibles: {list(RESAMPLE_MAP.keys())}")
+
+    freq = RESAMPLE_MAP[timeframe]
+    ticks_path = Path(ticks_dir)
+    output_path = Path(candles_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # Lister les fichiers tick disponibles
+    tick_files = sorted(ticks_path.glob(f"{symbol}_ticks_*.parquet"))
+    if not tick_files:
+        print(f"❌ Aucun fichier tick trouvé dans {ticks_dir}")
+        return
+
+    total_candles = 0
+    built = 0
+    skipped = 0
+
+    for tick_file in tick_files:
+        # Extraire le mois du nom de fichier: XAUUSD_ticks_2025-12.parquet → 2025-12
+        month_str = tick_file.stem.split("_ticks_")[1]  # "2025-12"
+
+        # Filtrer par période si demandé
+        try:
+            file_month = datetime.strptime(month_str, "%Y-%m")
+        except ValueError:
+            continue
+
+        if start and file_month < start.replace(day=1):
+            continue
+        if end and file_month >= end.replace(day=1):
+            continue
+
+        out_file = output_path / f"{symbol}_{timeframe}_{month_str}.parquet"
+
+        if out_file.exists():
+            existing = pd.read_parquet(out_file)
+            print(f"⏭️  {out_file.name} existe ({len(existing):,} bougies), skip")
+            total_candles += len(existing)
+            skipped += 1
+            continue
+
+        print(f"🔨 Reconstruction {symbol} {timeframe} {month_str} depuis ticks...", end=" ", flush=True)
+
+        df = pd.read_parquet(tick_file)
+        df["time"] = pd.to_datetime(df["time"])
+
+        # Utiliser bid comme prix principal (standard forex)
+        # Fallback sur 'last' si bid absent, puis sur moyenne bid/ask
+        if "bid" in df.columns:
+            price = df["bid"]
+        elif "last" in df.columns:
+            price = df["last"]
+        else:
+            price = (df["ask"] + df["bid"]) / 2
+
+        df["price"] = price
+        df = df.set_index("time")
+
+        # Resampling OHLC
+        candles = df["price"].resample(freq).agg(
+            open="first", high="max", low="min", close="last"
+        )
+
+        # Volume = nombre de ticks dans la période
+        candles["tick_volume"] = df["price"].resample(freq).count()
+
+        # Supprimer les périodes sans ticks (marché fermé)
+        candles = candles.dropna(subset=["open"])
+        candles = candles[candles["tick_volume"] > 0]
+
+        # Remettre time comme colonne
+        candles = candles.reset_index()
+        candles = candles.rename(columns={"time": "time"})
+
+        if len(candles) == 0:
+            print(f"⚠️  Aucune bougie générée")
+            continue
+
+        candles.to_parquet(out_file, engine="pyarrow", compression="snappy")
+        size_mb = out_file.stat().st_size / 1024 / 1024
+        print(f"✅ {len(candles):,} bougies → {size_mb:.2f} MB")
+        total_candles += len(candles)
+        built += 1
+
+        del df, candles
+
+    print(f"\n📊 {timeframe} depuis ticks: {built} mois construits, {skipped} skippés, {total_candles:,} bougies au total")
+
+
 # ─── Candle Export ───────────────────────────────────────────
 
 def export_candles(symbol: str, timeframe: str, start: datetime, end: datetime,
                    output_dir: str = "data/parquet/candles"):
     """
-    Exporte les bougies pour un timeframe donné.
-    Télécharge mois par mois pour éviter les limites de l'API MT5.
+    Exporte les bougies pour un timeframe donné, mois par mois.
+    Chaque mois = 1 fichier parquet. Skip automatique si le fichier existe déjà.
+    Même logique que export_ticks pour la gestion de la RAM et la reprise sur erreur.
     """
     tf_map = {
         "M1": mt5.TIMEFRAME_M1,
@@ -138,44 +260,50 @@ def export_candles(symbol: str, timeframe: str, start: datetime, end: datetime,
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    start_year = start.year
-    end_year = end.year
-    filepath = output_path / f"{symbol}_{timeframe}_{start_year}-{end_year}.parquet"
-
-    print(f"📥 Export {symbol} {timeframe} {start.date()} → {end.date()}...", end=" ", flush=True)
-
-    current = start
-    all_dfs = []
+    current = start.replace(day=1)
+    total_candles = 0
 
     while current < end:
         next_month = (current + timedelta(days=32)).replace(day=1)
         month_end = min(next_month, end)
 
-        rates = mt5.copy_rates_range(symbol, tf_map[timeframe], current, month_end)
-        
-        if rates is not None and len(rates) > 0:
-            all_dfs.append(pd.DataFrame(rates))
+        filename = f"{symbol}_{timeframe}_{current.strftime('%Y-%m')}.parquet"
+        filepath = output_path / filename
 
+        if filepath.exists():
+            existing = pd.read_parquet(filepath)
+            print(f"⏭️  {filename} existe ({len(existing):,} bougies), skip")
+            total_candles += len(existing)
+            current = next_month
+            continue
+
+        print(f"📥 Export {symbol} {timeframe} {current.strftime('%Y-%m')}...", end=" ", flush=True)
+
+        rates = mt5.copy_rates_range(symbol, tf_map[timeframe], current, month_end)
+
+        if rates is None or len(rates) == 0:
+            print(f"⚠️  Aucune bougie pour {current.strftime('%Y-%m')}")
+            current = next_month
+            continue
+
+        df = pd.DataFrame(rates)
+        df["time"] = pd.to_datetime(df["time"], unit="s")
+        df = df.drop_duplicates(subset=["time"])
+
+        cols = [c for c in ["time", "open", "high", "low", "close", "tick_volume", "spread", "real_volume"]
+                if c in df.columns]
+        df = df[cols]
+
+        df.to_parquet(filepath, engine="pyarrow", compression="snappy")
+        size_mb = filepath.stat().st_size / 1024 / 1024
+        print(f"✅ {len(df):,} bougies → {size_mb:.2f} MB")
+        total_candles += len(df)
+
+        del df, rates
         current = next_month
 
-    if not all_dfs:
-        print("⚠️  Aucune bougie")
-        return None
-
-    df = pd.concat(all_dfs, ignore_index=True)
-    df = df.drop_duplicates(subset=["time"])
-    
-    df["time"] = pd.to_datetime(df["time"], unit="s")
-
-    cols = [c for c in ["time", "open", "high", "low", "close", "tick_volume", "spread", "real_volume"]
-            if c in df.columns]
-    df = df[cols]
-
-    df.to_parquet(filepath, engine="pyarrow", compression="snappy")
-    size_mb = filepath.stat().st_size / 1024 / 1024
-    print(f"✅ {len(df):,} bougies → {size_mb:.2f} MB")
-
-    return str(filepath)
+    print(f"\n📊 Total {timeframe} exportées: {total_candles:,}")
+    return str(output_path)
 
 
 # ─── Export All ──────────────────────────────────────────────

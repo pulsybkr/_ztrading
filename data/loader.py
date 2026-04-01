@@ -7,7 +7,7 @@ Supporte: ticks, M1, M5, M15, H1.
 import pandas as pd
 from pathlib import Path
 from datetime import datetime
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterator, Optional
 
 
@@ -20,20 +20,21 @@ class DataChunk:
     candles_m1: Optional[pd.DataFrame]   # Bougies M1 pour résolution fine (None si signal=M1)
     candles_h1: Optional[pd.DataFrame]   # Bougies H1 pour contexte de régime
     ticks_path: Optional[Path]
+    _ticks_cache: Optional[pd.DataFrame] = field(default=None, init=False, repr=False)
 
     def get_ticks(self, start: datetime, end: datetime) -> Optional[pd.DataFrame]:
-        """Charge uniquement les ticks nécessaires pour résoudre un trade."""
+        """Retourne les ticks d'une fenêtre temporelle. Charge depuis disque une seule fois."""
         if self.ticks_path is None or not self.ticks_path.exists():
             return None
 
-        df = pd.read_parquet(self.ticks_path)
-        df["time"] = pd.to_datetime(df["time"])
-        mask = (df["time"] >= start) & (df["time"] <= end)
-        result = df.loc[mask].reset_index(drop=True)
+        if self._ticks_cache is None:
+            df = pd.read_parquet(self.ticks_path)
+            df["time"] = pd.to_datetime(df["time"])
+            df = df.set_index("time").sort_index()
+            self._ticks_cache = df
 
-        if len(result) == 0:
-            return None
-        return result
+        result = self._ticks_cache.loc[start:end].reset_index()
+        return result if len(result) > 0 else None
 
     @property
     def has_ticks(self) -> bool:

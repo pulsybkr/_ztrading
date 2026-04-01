@@ -7,27 +7,29 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.types import BacktestConfig
 from backtest.engine import run_backtest
-from backtest.metrics import compute_metrics
 import json
 from datetime import datetime
 
 
-def run_and_save(start="2025-01-01", end="2025-12-31"):
+def run_and_save(start="2025-01-01", end="2025-12-31", timeframe="M5"):
     configs = {
         "1_baseline": BacktestConfig(
+            signal_timeframe=timeframe,
             use_session_filter=False,
             use_atr_ratio_filter=False,
         ),
         "2_session_filter": BacktestConfig(
+            signal_timeframe=timeframe,
             use_session_filter=True,
             use_atr_ratio_filter=False,
-            allowed_sessions=["sge_open", "london", "overlap"],
+            allowed_sessions=["asian", "london", "overlap"],
         ),
         "3_session+atr_ratio": BacktestConfig(
+            signal_timeframe=timeframe,
             use_session_filter=True,
             use_atr_ratio_filter=True,
             atr_ratio_threshold=0.15,
-            allowed_sessions=["sge_open", "london", "overlap"],
+            allowed_sessions=["asian", "london", "overlap"],
         ),
     }
 
@@ -35,12 +37,11 @@ def run_and_save(start="2025-01-01", end="2025-12-31"):
 
     for name, config in configs.items():
         print(f"\n{'='*60}")
-        print(f"  Running: {name}")
+        print(f"  Running: {name} [{timeframe}]")
         print(f"{'='*60}")
+        trades, metrics = run_backtest(config, start, end, verbose=True,
+                                       show_trades=False, resolution="auto")
 
-        trades, metrics = run_backtest(config, start, end, verbose=False, resolution="auto")
-
-        # Summarize
         if "error" in metrics:
             print(f"  ERROR: {metrics['error']}")
             all_results[name] = {"error": metrics["error"]}
@@ -101,5 +102,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--start", default="2025-01-01")
     parser.add_argument("--end", default="2025-12-31")
+    parser.add_argument("--timeframe", default="M5")
     args = parser.parse_args()
-    run_and_save(args.start, args.end)
+    run_and_save(args.start, args.end, timeframe=args.timeframe.upper())

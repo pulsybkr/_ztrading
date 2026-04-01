@@ -56,6 +56,32 @@ def data_export(
         shutdown_mt5()
 
 
+@data_app.command("rebuild")
+def data_rebuild(
+    symbol: str = typer.Option("XAUUSD", help="Symbole"),
+    timeframe: str = typer.Option("M1", help="Timeframe cible: M1, M5, M15, M30, H1..."),
+    start: str = typer.Option(None, help="Date debut YYYY-MM-DD (optionnel)"),
+    end: str = typer.Option(None, help="Date fin YYYY-MM-DD (optionnel)"),
+    ticks_dir: str = typer.Option("data/parquet/ticks", help="Dossier ticks source"),
+    candles_dir: str = typer.Option("data/parquet/candles", help="Dossier bougies sortie"),
+):
+    """Reconstruire les bougies OHLC depuis les fichiers tick existants."""
+    from data.mt5_export import build_candles_from_ticks
+    from datetime import datetime
+
+    start_dt = datetime.strptime(start, "%Y-%m-%d") if start else None
+    end_dt = datetime.strptime(end, "%Y-%m-%d") if end else None
+
+    build_candles_from_ticks(
+        ticks_dir=ticks_dir,
+        candles_dir=candles_dir,
+        symbol=symbol,
+        timeframe=timeframe,
+        start=start_dt,
+        end=end_dt,
+    )
+
+
 @data_app.command("info")
 def data_info():
     """Afficher les données disponibles."""
@@ -92,13 +118,14 @@ def backtest_run(
     trailing_atr_mult: float = typer.Option(0.75, help="Trailing = N x ATR"),
     breakeven_atr_mult: float = typer.Option(0.5, help="Breakeven a N x ATR"),
     regime_filter: bool = typer.Option(False, help="Activer filtre de session"),
-    sessions: str = typer.Option("sge_open,london,overlap", help="Sessions autorisees"),
+    sessions: str = typer.Option("asian,london,overlap", help="Sessions autorisees"),
     atr_ratio_filter: bool = typer.Option(False, help="Activer filtre ATR ratio"),
     atr_ratio_threshold: float = typer.Option(0.15, help="Seuil ATR ratio M5/H1"),
     use_ml_filter: bool = typer.Option(False, help="Activer filtre ML (necessite ml/models/model.joblib)"),
     ml_threshold: float = typer.Option(0.55, help="Seuil de confiance ML"),
     timeframe: str = typer.Option("M5", help="Timeframe des signaux: M1, M5, M15, M30, H1"),
     resolution: str = typer.Option("auto", help="Resolution: auto, ticks, m1, m5"),
+    show_trades: bool = typer.Option(True, help="Afficher chaque trade (desactiver pour M1)"),
 ):
     """Lancer un backtest."""
     from core.types import BacktestConfig
@@ -124,18 +151,21 @@ def backtest_run(
         signal_timeframe=timeframe.upper(),
     )
 
-    trades, metrics = run_backtest(config, start, end, resolution=resolution)
+    trades, metrics = run_backtest(config, start, end, resolution=resolution,
+                                   show_trades=show_trades)
 
 
 @backtest_app.command("compare")
 def backtest_compare(
     start: str = typer.Option(..., help="Date debut YYYY-MM-DD"),
     end: str = typer.Option(..., help="Date fin YYYY-MM-DD"),
+    timeframe: str = typer.Option("M5", help="Timeframe des signaux: M1, M5, M15, M30"),
     resolution: str = typer.Option("auto", help="Resolution: auto, ticks, m1, m5"),
 ):
-    """Comparer les configs: baseline vs session vs session+ATR."""
+    """Comparer 3 configs: baseline vs session vs session+ATR."""
     from backtest.engine import run_comparison
-    run_comparison(start, end, resolution=resolution)
+    run_comparison(start, end, resolution=resolution,
+                   signal_timeframe=timeframe.upper())
 
 
 # ─── OPTIMIZE COMMANDS ───────────────────────────────────────
@@ -146,37 +176,63 @@ def optimize_grid(
     start: str = typer.Option(...),
     end: str = typer.Option(...),
     param: list[str] = typer.Option([], help="param:val1,val2,val3"),
+    workers: int = typer.Option(None, help="Workers paralleles (defaut: nb CPU)"),
+    metric: str = typer.Option("profit_factor", help="Metrique a optimiser: profit_factor, sharpe_ratio, net_profit"),
 ):
-    """Grid search sur les paramètres."""
+    """Grid search parallele sur les parametres."""
     from itertools import product
     from core.types import BacktestConfig
-    from backtest.engine import run_backtest
+    from backtest.engine import run_parallel_backtests
 
     param_grid = {}
     for p in param:
-        name, values = p.split(":")
-        param_grid[name] = [float(v) for v in values.split(",")]
+        key, values = p.split(":")
+        param_grid[key] = [float(v) for v in values.split(",")]
 
     keys = list(param_grid.keys())
     all_combos = list(product(*param_grid.values()))
-    console.print(f"{len(all_combos)} combinaisons a tester...")
+    console.print(f"⚡ {len(all_combos)} combinaisons | optimisation: {metric}")
 
-    best_pf = 0
-    best_params = {}
-
+    named_configs = {}
+    combo_map = {}
     for i, combo in enumerate(all_combos):
         params = dict(zip(keys, combo))
-        config = BacktestConfig(symbol=symbol, **{k: v for k, v in params.items()})
-        trades, metrics = run_backtest(config, start, end, verbose=False)
+        name = f"combo_{i:04d}"
+        named_configs[name] = BacktestConfig(symbol=symbol, **params)
+        combo_map[name] = params
 
-        pf = metrics.get("profit_factor", 0)
-        if pf > best_pf:
-            best_pf = pf
+    results = run_parallel_backtests(
+        named_configs, start, end,
+        max_workers=workers,
+    )
+
+    best_score = -float("inf")
+    best_params = {}
+    rows = []
+
+    for name, data in results.items():
+        m = data["metrics"]
+        params = combo_map[name]
+        if "error" in m:
+            continue
+        score = m.get(metric, 0)
+        rows.append((score, params, m))
+        if score > best_score:
+            best_score = score
             best_params = params
 
-        console.print(f"  [{i+1}/{len(all_combos)}] {params} -> PF={pf:.2f}")
+    # Afficher top 10
+    rows.sort(key=lambda x: x[0], reverse=True)
+    console.print(f"\n{'─' * 60}")
+    console.print(f"  Top {min(10, len(rows))} résultats (tri par {metric})")
+    console.print(f"{'─' * 60}")
+    for score, params, m in rows[:10]:
+        console.print(
+            f"  {metric}={score:.3f} | trades={m['total_trades']} | "
+            f"wr={m['winrate']:.1f}% | {params}"
+        )
 
-    console.print(f"\nMeilleur : PF={best_pf:.2f} | {best_params}")
+    console.print(f"\n[green]Meilleur : {metric}={best_score:.3f} | {best_params}[/green]")
 
 
 # ─── TRAIN COMMANDS ──────────────────────────────────────────
@@ -186,36 +242,42 @@ def train_prepare(
     symbol: str = typer.Option("XAUUSD", help="Symbole"),
     start: str = typer.Option(..., help="Date debut YYYY-MM-DD"),
     end: str = typer.Option(..., help="Date fin YYYY-MM-DD"),
-    output: str = typer.Option("ml/models/signals_features.parquet", help="Fichier de sortie"),
+    timeframe: str = typer.Option("M5", help="Timeframe des signaux: M1, M5, M15, M30"),
+    output: str = typer.Option(None, help="Fichier de sortie (defaut: ml/models/signals_features_{TF}.parquet)"),
 ):
     """Préparer les features pour l'entraînement ML."""
     from data.loader import DataLoader
     from strategy.breakout import detect_breakouts
+    from backtest.engine import TIMEFRAME_MINUTES
     from strategy.regime import attach_atr_ratios
     from ml.features import signals_to_dataframe
     from strategy.keltner import compute_keltner
-    import pandas as pd
 
-    console.print(f"Preparation des donnees {symbol} {start} -> {end}...")
+    tf = timeframe.upper()
+    if output is None:
+        output = f"ml/models/signals_features_{tf}.parquet"
+
+    console.print(f"Preparation des donnees {symbol} {tf} {start} -> {end}...")
 
     loader = DataLoader()
-    df_m5 = loader.load_candles(symbol, "M5", start, end)
-    df_m5 = compute_keltner(df_m5)
-    console.print(f"  M5: {len(df_m5)} bougies")
+    df_signal = loader.load_candles(symbol, tf, start, end)
+    df_signal = compute_keltner(df_signal)
+    console.print(f"  {tf}: {len(df_signal)} bougies")
 
-    signals = detect_breakouts(df_m5)
+    candle_minutes = TIMEFRAME_MINUTES.get(tf, 5)
+    signals = detect_breakouts(df_signal, candle_minutes=candle_minutes)
     console.print(f"  Signaux détectés: {len(signals)}")
 
     df_h1 = None
     try:
         df_h1 = loader.load_candles(symbol, "H1", start, end)
         df_h1 = compute_keltner(df_h1)
-        signals = attach_atr_ratios(signals, df_m5, df_h1)
+        signals = attach_atr_ratios(signals, df_signal, df_h1)
         console.print(f"  H1 chargé: {len(df_h1)} bougies")
     except FileNotFoundError:
         console.print("  [yellow]H1 non disponible, atr_ratio sera 0[/yellow]")
 
-    df = signals_to_dataframe(signals, df_m5, df_h1)
+    df = signals_to_dataframe(signals, df_signal, df_h1)
     Path(output).parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(output, engine="pyarrow", compression="snappy")
     console.print(f"  [green]{len(df)} signaux sauvegardés -> {output}[/green]")
@@ -226,40 +288,48 @@ def train_run(
     symbol: str = typer.Option("XAUUSD", help="Symbole"),
     start: str = typer.Option(..., help="Date debut YYYY-MM-DD"),
     end: str = typer.Option(..., help="Date fin YYYY-MM-DD"),
+    timeframe: str = typer.Option("M5", help="Timeframe des signaux: M1, M5, M15, M30"),
     train_weeks: int = typer.Option(8, help="Semaines d'entrainement"),
     test_weeks: int = typer.Option(2, help="Semaines de test"),
-    output: str = typer.Option("ml/models/model.joblib", help="Fichier modele"),
+    output: str = typer.Option(None, help="Fichier modele (defaut: ml/models/model_{TF}.joblib)"),
 ):
     """Entraîner le modèle LightGBM en walk-forward."""
     from data.loader import DataLoader
     from strategy.breakout import detect_breakouts
+    from backtest.engine import TIMEFRAME_MINUTES
     from strategy.regime import attach_atr_ratios
     from strategy.keltner import compute_keltner
     from ml.trainer import walk_forward_train, train_final_model, save_model
     from core.types import BacktestConfig
 
-    console.print(f"Entrainement walk-forward {symbol}...")
+    tf = timeframe.upper()
+    if output is None:
+        output = f"ml/models/model_{tf}.joblib"
+
+    console.print(f"Entrainement walk-forward {symbol} [{tf}]...")
 
     loader = DataLoader()
-    df_m5 = loader.load_candles(symbol, "M5", start, end)
-    df_m5 = compute_keltner(df_m5)
-    signals = detect_breakouts(df_m5)
+    df_signal = loader.load_candles(symbol, tf, start, end)
+    df_signal = compute_keltner(df_signal)
+
+    candle_minutes = TIMEFRAME_MINUTES.get(tf, 5)
+    signals = detect_breakouts(df_signal, candle_minutes=candle_minutes)
 
     df_h1 = None
     try:
         df_h1 = loader.load_candles(symbol, "H1", start, end)
         df_h1 = compute_keltner(df_h1)
-        signals = attach_atr_ratios(signals, df_m5, df_h1)
+        signals = attach_atr_ratios(signals, df_signal, df_h1)
         console.print(f"  H1: {len(df_h1)} bougies")
     except FileNotFoundError:
         console.print("  [yellow]H1 non disponible[/yellow]")
 
     console.print(f"  {len(signals)} signaux détectés")
 
-    config = BacktestConfig()
+    config = BacktestConfig(signal_timeframe=tf)
     fold_results = walk_forward_train(
         signals=signals,
-        candles_m5=df_m5,
+        candles_signal=df_signal,
         candles_h1=df_h1,
         train_weeks=train_weeks,
         test_weeks=test_weeks,
@@ -293,6 +363,8 @@ def train_run(
         # Save best model by precision
         best_fold = max(fold_results, key=lambda x: x["precision"])
         metadata = {
+            "signal_timeframe": tf,
+            "symbol": symbol,
             "best_fold": best_fold["fold"],
             "precision": best_fold["precision"],
             "recall": best_fold["recall"],
@@ -346,9 +418,9 @@ def live_paper(
 def live_start(
     symbol: str = typer.Option("XAUUSD", help="Symbole"),
     lot: float = typer.Option(0.01, help="Taille de lot"),
-    login: int = typer.Option(..., help="MT5 login"),
-    password: str = typer.Option(..., help="MT5 password"),
-    server: str = typer.Option(..., help="MT5 server"),
+    login: int = typer.Option(None, help="MT5 login (defaut: MT5_LOGIN dans .env)"),
+    password: str = typer.Option(None, help="MT5 password (defaut: MT5_PASSWORD dans .env)"),
+    server: str = typer.Option(None, help="MT5 server (defaut: MT5_SERVER dans .env)"),
 ):
     """LIVE TRADING — utiliser avec prudence."""
     from core.types import BacktestConfig

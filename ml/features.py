@@ -15,15 +15,15 @@ FEATURE_COLUMNS = [
 ]
 
 
-def build_features(signal: Signal, candles_m5: pd.DataFrame,
+def build_features(signal: Signal, candles_signal: pd.DataFrame,
                    candles_h1: pd.DataFrame = None) -> dict:
     i = signal.candle_index
-    row = candles_m5.iloc[i]
+    row = candles_signal.iloc[i]
 
     features = {}
 
-    if "tick_volume" in candles_m5.columns:
-        vol_window = candles_m5.iloc[max(0, i-20):i]["tick_volume"]
+    if "tick_volume" in candles_signal.columns:
+        vol_window = candles_signal.iloc[max(0, i-20):i]["tick_volume"]
         if len(vol_window) > 0 and vol_window.mean() > 0:
             features["tick_volume_ratio"] = row["tick_volume"] / vol_window.mean()
         else:
@@ -48,7 +48,7 @@ def build_features(signal: Signal, candles_m5: pd.DataFrame,
     else:
         features["keltner_distance"] = (row["kc_lower"] - row["close"]) / row["atr"]
 
-    closes = candles_m5.iloc[max(0, i-14):i+1]["close"]
+    closes = candles_signal.iloc[max(0, i-14):i+1]["close"]
     if len(closes) >= 14:
         delta = closes.diff()
         gain = delta.where(delta > 0, 0).rolling(14).mean().iloc[-1]
@@ -58,13 +58,13 @@ def build_features(signal: Signal, candles_m5: pd.DataFrame,
         features["rsi_14"] = 50
 
     if i >= 5:
-        price_5_ago = candles_m5.iloc[i - 5]["close"]
+        price_5_ago = candles_signal.iloc[i - 5]["close"]
         features["momentum_5"] = (row["close"] - price_5_ago) / row["atr"]
     else:
         features["momentum_5"] = 0
 
     session_map = {
-        SessionType.SGE_OPEN: 0,
+        SessionType.ASIAN: 0,
         SessionType.LONDON: 1,
         SessionType.OVERLAP: 2,
         SessionType.OFF_SESSION: 3,
@@ -84,7 +84,7 @@ def build_features(signal: Signal, candles_m5: pd.DataFrame,
         features["ema_slope_h1"] = 0
 
     if i >= 20:
-        window = candles_m5.iloc[i-20:i+1]["close"]
+        window = candles_signal.iloc[i-20:i+1]["close"]
         features["vol_ratio_20"] = window.std() / window.mean() if window.mean() > 0 else 0
     else:
         features["vol_ratio_20"] = 0
@@ -92,11 +92,11 @@ def build_features(signal: Signal, candles_m5: pd.DataFrame,
     return features
 
 
-def signals_to_dataframe(signals: list[Signal], candles_m5: pd.DataFrame,
+def signals_to_dataframe(signals: list[Signal], candles_signal: pd.DataFrame,
                         candles_h1: pd.DataFrame = None) -> pd.DataFrame:
     rows = []
     for signal in signals:
-        features = build_features(signal, candles_m5, candles_h1)
+        features = build_features(signal, candles_signal, candles_h1)
         features["time"] = signal.time
         features["direction"] = signal.direction.value
         features["signal_idx"] = signal.candle_index

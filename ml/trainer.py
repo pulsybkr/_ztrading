@@ -28,11 +28,11 @@ DEFAULT_MODEL_PARAMS = {
 }
 
 
-def prepare_training_data(signals: list[Signal], candles_m5: pd.DataFrame,
+def prepare_training_data(signals: list[Signal], candles_signal: pd.DataFrame,
                          candles_h1: pd.DataFrame = None,
                          config: BacktestConfig = None) -> pd.DataFrame:
-    df_features = signals_to_dataframe(signals, candles_m5, candles_h1)
-    df_labels = label_signals(signals, candles_m5, config)
+    df_features = signals_to_dataframe(signals, candles_signal, candles_h1)
+    df_labels = label_signals(signals, candles_signal, config)
 
     df = df_features.merge(df_labels[["time", "signal_idx", "label", "barrier", "return"]],
                           on=["time", "signal_idx"], how="left")
@@ -52,7 +52,7 @@ def prepare_training_data(signals: list[Signal], candles_m5: pd.DataFrame,
 
 def walk_forward_train(
     signals: list[Signal],
-    candles_m5: pd.DataFrame,
+    candles_signal: pd.DataFrame,
     candles_h1: pd.DataFrame = None,
     train_weeks: int = 8,
     test_weeks: int = 2,
@@ -63,7 +63,7 @@ def walk_forward_train(
     if model_params is None:
         model_params = DEFAULT_MODEL_PARAMS.copy()
 
-    df = prepare_training_data(signals, candles_m5, candles_h1, config)
+    df = prepare_training_data(signals, candles_signal, candles_h1, config)
     df = df.sort_values("time").reset_index(drop=True)
 
     start = df["time"].min()
