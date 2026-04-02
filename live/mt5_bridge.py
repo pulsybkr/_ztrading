@@ -3,6 +3,9 @@ import pandas as pd
 from core.types import Signal, Direction, BacktestConfig
 from datetime import datetime
 from typing import Optional
+from rich.console import Console
+
+console = Console()
 
 MT5_TIMEFRAMES = {
     "M1": mt5.TIMEFRAME_M1,
@@ -45,7 +48,7 @@ class MT5Bridge:
 
         self.connected = True
         info = mt5.account_info()
-        print(f"Connecte: {info.server} | Balance: ${info.balance:.2f}")
+        console.print(f"[green]✓ Connecté[/green] {info.server} | {info.name} | Balance: [bold]{info.currency} {info.balance:.2f}[/bold]")
         return True
 
     def is_connected(self) -> bool:
@@ -102,7 +105,8 @@ class MT5Bridge:
             return None
 
         dir_str = "LONG" if signal.direction == Direction.LONG else "SHORT"
-        print(f"Ordre execute: {dir_str} {lot} lots @ {price:.2f} | SL: {sl:.2f}")
+        color = "green" if signal.direction == Direction.LONG else "red"
+        console.print(f"[{color}]▶ {dir_str}[/{color}] {lot} lots @ [bold]{price:.2f}[/bold] | SL: {sl:.2f} | Ticket: {result.order}")
         return result.order
 
     def close_position(self, ticket: int, lot: float = None) -> bool:
@@ -139,10 +143,10 @@ class MT5Bridge:
 
         result = mt5.order_send(request)
         if result.retcode != mt5.TRADE_RETCODE_DONE:
-            print(f"Close echoue: {result.retcode}")
+            console.print(f"[red]✗ Close échoué: {result.retcode}[/red]")
             return False
 
-        print(f"Position {ticket} fermee")
+        console.print(f"[cyan]■ Position {ticket} fermée[/cyan]")
         return True
 
     def get_open_positions(self, symbol: str = None, magic: int = 240331) -> list:
@@ -153,7 +157,23 @@ class MT5Bridge:
             return []
         return [p for p in positions if p.magic == magic]
 
-    def update_trailing_stops(self) -> int:
+    def _get_current_atr(self, symbol: str) -> float:
+        """Compute current ATR from recent candles (same method as backtest engine)."""
+        period = self.config.keltner_atr_period
+        tf = getattr(self.config, "signal_timeframe", "M5")
+        df = self.get_candles(symbol, tf, count=period + 5)
+        if df.empty or len(df) < period:
+            return 0.0
+        prev_close = df["close"].shift(1)
+        tr = pd.concat([
+            df["high"] - df["low"],
+            (df["high"] - prev_close).abs(),
+            (df["low"] - prev_close).abs(),
+        ], axis=1).max(axis=1)
+        atr = tr.rolling(period).mean().iloc[-1]
+        return float(atr) if pd.notna(atr) else 0.0
+
+    def update_trailing_stops(self, db=None) -> int:
         updated = 0
         positions = self.get_open_positions()
 
@@ -162,27 +182,46 @@ class MT5Bridge:
             if tick is None:
                 continue
 
+            cur_atr = self._get_current_atr(pos.symbol)
+            if cur_atr <= 0:
+                continue
+
+            be_dist    = self.config.breakeven_atr_mult * cur_atr
+            trail_dist = self.config.trailing_atr_mult  * cur_atr
+            old_sl     = pos.sl
+            event_type = "trailing_update"
+
             if pos.type == mt5.POSITION_TYPE_BUY:
-                sl_distance = pos.price_open - pos.sl  # positive: SL is below entry
-                if sl_distance <= 0:
-                    continue
-                be_level = pos.price_open + self.config.breakeven_atr_mult * sl_distance
-                new_sl = tick["bid"] - self.config.trailing_atr_mult * sl_distance
-                # Only move SL up (never down), must stay below current bid
-                if tick["bid"] > be_level and new_sl > pos.sl + 0.10 and new_sl < tick["bid"]:
-                    if self._modify_sl(pos.ticket, new_sl):
-                        updated += 1
+                pnl = tick["bid"] - pos.price_open
+                if pnl >= be_dist:
+                    new_sl = tick["bid"] - trail_dist
+                    if new_sl < pos.price_open:
+                        new_sl = pos.price_open
+                        event_type = "breakeven"
+                    if new_sl > old_sl + 0.10 and new_sl < tick["bid"]:
+                        if self._modify_sl(pos.ticket, new_sl):
+                            unrealized = round(pnl * self.config.lot_size * self.config.contract_size, 2)
+                            label = "[yellow]⇡ BE[/yellow]" if event_type == "breakeven" else "[cyan]⇡ Trail[/cyan]"
+                            console.print(f"  {label} SL {old_sl:.2f} → [bold]{new_sl:.2f}[/bold] | Prix={tick['bid']:.2f} | ATR={cur_atr:.3f} | PnL=[green]+${unrealized}[/green]")
+                            if db:
+                                db.log_sl_event(event_type, old_sl, new_sl, tick["bid"], tick["ask"], cur_atr, unrealized)
+                            updated += 1
 
             elif pos.type == mt5.POSITION_TYPE_SELL:
-                sl_distance = pos.sl - pos.price_open  # positive: SL is above entry
-                if sl_distance <= 0:
-                    continue
-                be_level = pos.price_open - self.config.breakeven_atr_mult * sl_distance
-                new_sl = tick["ask"] + self.config.trailing_atr_mult * sl_distance
-                # Only move SL down (never up), must stay above current ask
-                if tick["ask"] < be_level and new_sl < pos.sl - 0.10 and new_sl > tick["ask"]:
-                    if self._modify_sl(pos.ticket, new_sl):
-                        updated += 1
+                pnl = pos.price_open - tick["ask"]
+                if pnl >= be_dist:
+                    new_sl = tick["ask"] + trail_dist
+                    if new_sl > pos.price_open or new_sl == 0:
+                        new_sl = pos.price_open
+                        event_type = "breakeven"
+                    if (new_sl < old_sl - 0.10 or old_sl == 0) and new_sl > tick["ask"]:
+                        if self._modify_sl(pos.ticket, new_sl):
+                            unrealized = round(pnl * self.config.lot_size * self.config.contract_size, 2)
+                            label = "[yellow]⇣ BE[/yellow]" if event_type == "breakeven" else "[cyan]⇣ Trail[/cyan]"
+                            console.print(f"  {label} SL {old_sl:.2f} → [bold]{new_sl:.2f}[/bold] | Prix={tick['ask']:.2f} | ATR={cur_atr:.3f} | PnL=[green]+${unrealized}[/green]")
+                            if db:
+                                db.log_sl_event(event_type, old_sl, new_sl, tick["bid"], tick["ask"], cur_atr, unrealized)
+                            updated += 1
 
         return updated
 
@@ -194,10 +233,7 @@ class MT5Bridge:
             "tp": 0.0,
         }
         result = mt5.order_send(request)
-        if result.retcode == mt5.TRADE_RETCODE_DONE:
-            print(f"  SL mis a jour -> {new_sl:.2f}")
-            return True
-        return False
+        return result.retcode == mt5.TRADE_RETCODE_DONE
 
     def disconnect(self):
         if self.connected:
@@ -221,9 +257,14 @@ class MT5Bridge:
     def get_account_info(self) -> dict:
         info = mt5.account_info()
         return {
-            "balance": info.balance,
-            "equity": info.equity,
-            "profit": info.profit,
-            "margin": info.margin,
+            "login":     info.login,
+            "server":    info.server,
+            "name":      info.name,
+            "currency":  info.currency,
+            "leverage":  info.leverage,
+            "balance":   info.balance,
+            "equity":    info.equity,
+            "profit":    info.profit,
+            "margin":    info.margin,
             "freemargin": info.margin_free,
         }

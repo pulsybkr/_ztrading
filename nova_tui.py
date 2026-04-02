@@ -113,7 +113,7 @@ def menu_backtest():
         if ml_filter:
             threshold_choice = questionary.select(
                 "  Seuil de probabilité ML :",
-                choices=["0.50  (permissif)", "0.52", "0.55  (défaut)", "0.58", "0.60  (strict)"],
+                choices=["0.40  (très permissif)", "0.45", "0.50  (permissif)", "0.52", "0.55  (défaut)", "0.58", "0.60  (strict)"],
                 default="0.55  (défaut)",
             ).ask()
             ml_threshold = float(threshold_choice.split()[0])
@@ -302,6 +302,85 @@ def menu_optimize():
     run_cmd(*cmd)
 
 
+def _collect_live_params() -> list:
+    """Collecte les paramètres stratégie pour le live/paper trading."""
+    # ── Timeframe ────────────────────────────────────────────────────
+    console.print("\n[bold cyan]── Timeframe ──[/bold cyan]")
+    tf_choice = questionary.select(
+        "  Timeframe des signaux :",
+        choices=["M1 (1 minute)", "M5 (5 minutes — défaut)", "M15 (15 minutes)", "M30 (30 minutes)"],
+        default="M5 (5 minutes — défaut)"
+    ).ask()
+    timeframe = tf_choice.split(" ")[0]
+
+    # ── Keltner ──────────────────────────────────────────────────────
+    console.print("\n[bold cyan]── Keltner Channel ──[/bold cyan]")
+    keltner_period = ask_param("Période EMA", 20)
+    keltner_mult   = ask_param("Multiplicateur ATR", 2.0)
+
+    # ── Gestion du risque ────────────────────────────────────────────
+    console.print("\n[bold cyan]── Gestion du Risque ──[/bold cyan]")
+    sl_atr_mult        = ask_param("Stop Loss     (× ATR)", 1.0)
+    breakeven_atr_mult = ask_param("Breakeven     (× ATR)", 0.5)
+    trailing_atr_mult  = ask_param("Trailing Stop (× ATR)", 0.75)
+
+    # ── Lot ──────────────────────────────────────────────────────────
+    console.print("\n[bold cyan]── Lot ──[/bold cyan]")
+    lot_size = ask_param("Taille de lot", 0.01)
+
+    # ── Filtres de session ───────────────────────────────────────────
+    console.print("\n[bold cyan]── Filtres de Session ──[/bold cyan]")
+    session_filter = questionary.confirm(
+        "  Activer le filtre de session ?", default=True
+    ).ask()
+    sessions_selected = ["asian", "london", "overlap"]
+    if session_filter:
+        sessions_selected = questionary.checkbox(
+            "  Sessions autorisées :",
+            choices=["asian", "london", "overlap"],
+            default=["asian", "london", "overlap"],
+        ).ask() or ["asian", "london", "overlap"]
+
+    # ── Filtre ML ────────────────────────────────────────────────────
+    console.print("\n[bold cyan]── Filtre Machine Learning ──[/bold cyan]")
+    ml_filter = False
+    ml_threshold = 0.55
+    model_path  = f"ml/models/model_{timeframe}.joblib"
+    legacy_path = "ml/models/model.joblib"
+    if os.path.exists(model_path) or (timeframe == "M5" and os.path.exists(legacy_path)):
+        ml_filter = questionary.confirm(
+            f"  Activer le filtre ML ? (modèle {timeframe} détecté)", default=False
+        ).ask()
+        if ml_filter:
+            threshold_choice = questionary.select(
+                "  Seuil de probabilité ML :",
+                choices=["0.40  (très permissif)", "0.45", "0.50  (permissif)", "0.52", "0.55  (défaut)", "0.58", "0.60  (strict)"],
+                default="0.55  (défaut)",
+            ).ask()
+            ml_threshold = float(threshold_choice.split()[0])
+    else:
+        console.print(f"  [yellow]Aucun modèle trouvé pour {timeframe} — filtre ML désactivé[/yellow]")
+
+    # ── Construction liste d'args ────────────────────────────────────
+    cmd = [
+        "--timeframe", timeframe,
+        "--keltner-period", keltner_period,
+        "--keltner-mult",   keltner_mult,
+        "--sl-atr-mult",    sl_atr_mult,
+        "--breakeven-atr-mult", breakeven_atr_mult,
+        "--trailing-atr-mult",  trailing_atr_mult,
+        "--lot", lot_size,
+    ]
+    if session_filter:
+        cmd += ["--regime-filter", "--sessions", ",".join(sessions_selected)]
+    else:
+        cmd += ["--no-regime-filter"]
+    if ml_filter:
+        cmd += ["--use-ml-filter", "--ml-threshold", str(ml_threshold)]
+
+    return cmd
+
+
 def menu_live():
     action = questionary.select(
         "🟢 Live Trading & Paper - Actions",
@@ -318,15 +397,20 @@ def menu_live():
 
     if "Statut" in action:
         run_cmd("-m", "cli.app", "live", "status")
-    elif "Paper Trading" in action:
-        console.print("[yellow]Le Paper Trading va utiliser vos infos MT5 dans le fichier .env et ne passera que des ordres simulés.[/yellow]")
-        if questionary.confirm("Voulez-vous lancer le Paper Trading sur XAUUSD ?").ask():
-            run_cmd("-m", "cli.app", "live", "paper")
+        return
+
+    params = _collect_live_params()
+
+    if "Paper Trading" in action:
+        console.print("\n[yellow]Paper Trading : ordres simulés, aucun capital engagé.[/yellow]")
+        if questionary.confirm("Lancer le Paper Trading sur XAUUSD ?").ask():
+            run_cmd("-m", "cli.app", "live", "paper", *params)
+
     elif "Live Trading" in action:
-        console.print("[red]⚠️ ATTENTION : LE MODE LIVE ENGAGE VOTRE CAPITAL SUR LE SERVEUR MT5.[/red]")
+        console.print("\n[red]⚠️ ATTENTION : LE MODE LIVE ENGAGE VOTRE CAPITAL SUR LE SERVEUR MT5.[/red]")
         validation = questionary.text("Écrivez 'JE COMPRENDS' pour continuer :").ask()
         if validation == "JE COMPRENDS":
-            run_cmd("-m", "cli.app", "live", "start")
+            run_cmd("-m", "cli.app", "live", "start", *params)
         else:
             console.print("Mode Live annulé.")
 

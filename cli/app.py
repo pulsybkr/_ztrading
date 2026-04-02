@@ -112,11 +112,12 @@ def backtest_run(
     commission: float = typer.Option(3.50, help="Commission $/lot round-turn"),
     spread: float = typer.Option(0.20, help="Spread moyen en $"),
     balance: float = typer.Option(100, help="Capital initial $ (compte reel ~50-100 EUR)"),
-    keltner_period: int = typer.Option(20, help="Periode EMA Keltner"),
-    keltner_mult: float = typer.Option(2.0, help="Multiplicateur Keltner"),
-    sl_atr_mult: float = typer.Option(1.0, help="SL = N x ATR"),
-    trailing_atr_mult: float = typer.Option(0.75, help="Trailing = N x ATR"),
-    breakeven_atr_mult: float = typer.Option(0.5, help="Breakeven a N x ATR"),
+    keltner_period: int = typer.Option(20, help="Keltner EMA Period"),
+    keltner_atr_period: int = typer.Option(14, help="Keltner ATR Period"),
+    keltner_mult: float = typer.Option(2.0, help="Keltner Multiplier"),
+    sl_atr_mult: float = typer.Option(1.0, help="Stop Loss (ATR mult)"),
+    trailing_atr_mult: float = typer.Option(0.75, help="Trailing SL (ATR mult)"),
+    breakeven_atr_mult: float = typer.Option(0.5, help="Breakeven (ATR mult)"),
     regime_filter: bool = typer.Option(False, help="Activer filtre de session"),
     sessions: str = typer.Option("asian,london,overlap", help="Sessions autorisees"),
     atr_ratio_filter: bool = typer.Option(False, help="Activer filtre ATR ratio"),
@@ -138,6 +139,7 @@ def backtest_run(
         commission_per_lot=commission,
         spread=spread,
         keltner_ema_period=keltner_period,
+        keltner_atr_period=keltner_atr_period,
         keltner_multiplier=keltner_mult,
         sl_atr_mult=sl_atr_mult,
         trailing_atr_mult=trailing_atr_mult,
@@ -386,7 +388,18 @@ def train_run(
 @live_app.command("paper")
 def live_paper(
     symbol: str = typer.Option("XAUUSD", help="Symbole"),
-    lot: float = typer.Option(0.01, help="Taille de lot"),
+    timeframe: str = typer.Option("M5", help="Timeframe des signaux: M1, M5, M15, M30"),
+    lot: float = typer.Option(0.01, help="Lot Size"),
+    keltner_period: int = typer.Option(20, help="Keltner EMA Period"),
+    keltner_atr_period: int = typer.Option(14, help="Keltner ATR Period"),
+    keltner_mult: float = typer.Option(2.0, help="Keltner Multiplier"),
+    sl_atr_mult: float = typer.Option(1.0, help="Stop Loss (ATR mult)"),
+    breakeven_atr_mult: float = typer.Option(0.5, help="Breakeven (ATR mult)"),
+    trailing_atr_mult: float = typer.Option(0.75, help="Trailing SL (ATR mult)"),
+    regime_filter: bool = typer.Option(True, help="Activer filtre de session"),
+    sessions: str = typer.Option("asian,london,overlap", help="Sessions autorisees"),
+    use_ml_filter: bool = typer.Option(False, help="Activer filtre ML"),
+    ml_threshold: float = typer.Option(0.55, help="ML seuil probabilite [0-1]"),
     login: int = typer.Option(None, help="MT5 login"),
     password: str = typer.Option(None, help="MT5 password"),
     server: str = typer.Option(None, help="MT5 server"),
@@ -396,7 +409,21 @@ def live_paper(
     from live.signal_loop import SignalLoop
     from live.mt5_bridge import MT5Bridge
 
-    config = BacktestConfig(symbol=symbol, lot_size=lot)
+    config = BacktestConfig(
+        symbol=symbol,
+        lot_size=lot,
+        signal_timeframe=timeframe.upper(),
+        keltner_ema_period=keltner_period,
+        keltner_atr_period=keltner_atr_period,
+        keltner_multiplier=keltner_mult,
+        sl_atr_mult=sl_atr_mult,
+        breakeven_atr_mult=breakeven_atr_mult,
+        trailing_atr_mult=trailing_atr_mult,
+        use_session_filter=regime_filter,
+        allowed_sessions=sessions.split(","),
+        use_ml_filter=use_ml_filter,
+        ml_threshold=ml_threshold,
+    )
     bridge = MT5Bridge(config)
 
     if not bridge.connect(login, password, server):
@@ -408,7 +435,7 @@ def live_paper(
     console.print("[yellow]Ctrl+C pour arreter[/yellow]")
 
     try:
-        loop.start(paper=True, regime_filter=True)
+        loop.start(paper=True, regime_filter=regime_filter)
     except KeyboardInterrupt:
         loop.stop()
         bridge.disconnect()
@@ -417,7 +444,18 @@ def live_paper(
 @live_app.command("start")
 def live_start(
     symbol: str = typer.Option("XAUUSD", help="Symbole"),
-    lot: float = typer.Option(0.01, help="Taille de lot"),
+    timeframe: str = typer.Option("M5", help="Timeframe des signaux: M1, M5, M15, M30"),
+    lot: float = typer.Option(0.01, help="Lot Size"),
+    keltner_period: int = typer.Option(20, help="Keltner EMA Period"),
+    keltner_atr_period: int = typer.Option(14, help="Keltner ATR Period"),
+    keltner_mult: float = typer.Option(2.0, help="Keltner Multiplier"),
+    sl_atr_mult: float = typer.Option(1.0, help="Stop Loss (ATR mult)"),
+    breakeven_atr_mult: float = typer.Option(0.5, help="Breakeven (ATR mult)"),
+    trailing_atr_mult: float = typer.Option(0.75, help="Trailing SL (ATR mult)"),
+    regime_filter: bool = typer.Option(True, help="Activer filtre de session"),
+    sessions: str = typer.Option("asian,london,overlap", help="Sessions autorisees"),
+    use_ml_filter: bool = typer.Option(False, help="Activer filtre ML"),
+    ml_threshold: float = typer.Option(0.55, help="ML seuil probabilite [0-1]"),
     login: int = typer.Option(None, help="MT5 login (defaut: MT5_LOGIN dans .env)"),
     password: str = typer.Option(None, help="MT5 password (defaut: MT5_PASSWORD dans .env)"),
     server: str = typer.Option(None, help="MT5 server (defaut: MT5_SERVER dans .env)"),
@@ -427,7 +465,21 @@ def live_start(
     from live.signal_loop import SignalLoop
     from live.mt5_bridge import MT5Bridge
 
-    config = BacktestConfig(symbol=symbol, lot_size=lot)
+    config = BacktestConfig(
+        symbol=symbol,
+        lot_size=lot,
+        signal_timeframe=timeframe.upper(),
+        keltner_ema_period=keltner_period,
+        keltner_atr_period=keltner_atr_period,
+        keltner_multiplier=keltner_mult,
+        sl_atr_mult=sl_atr_mult,
+        breakeven_atr_mult=breakeven_atr_mult,
+        trailing_atr_mult=trailing_atr_mult,
+        use_session_filter=regime_filter,
+        allowed_sessions=sessions.split(","),
+        use_ml_filter=use_ml_filter,
+        ml_threshold=ml_threshold,
+    )
     bridge = MT5Bridge(config)
 
     if not bridge.connect(login, password, server):
@@ -439,7 +491,7 @@ def live_start(
     console.print("[red]Ctrl+C pour arreter[/red]")
 
     try:
-        loop.start(paper=False, regime_filter=True)
+        loop.start(paper=False, regime_filter=regime_filter)
     except KeyboardInterrupt:
         loop.stop()
         bridge.disconnect()
@@ -465,14 +517,35 @@ def live_status(
     info = bridge.get_account_info()
     positions = bridge.get_open_positions()
 
-    console.print(f"\n=== Account ===")
-    console.print(f"Balance: ${info['balance']:.2f}")
-    console.print(f"Equity:  ${info['equity']:.2f}")
-    console.print(f"Profit:  ${info['profit']:.2f}")
+    console.print(f"\n[bold]── Compte ──[/bold]")
+    console.print(f"  {info['name']} (#{info['login']}) | {info['server']}")
+    console.print(f"  Balance:  [bold]{info['currency']} {info['balance']:.2f}[/bold]")
+    console.print(f"  Equity:   {info['currency']} {info['equity']:.2f}")
+    console.print(f"  Profit:   {info['currency']} {info['profit']:.2f}")
+    console.print(f"  Levier:   1:{info['leverage']} | Marge libre: {info['currency']} {info['freemargin']:.2f}")
 
-    console.print(f"\n=== Positions ouvertes: {len(positions)} ===")
+    console.print(f"\n[bold]── Positions ouvertes: {len(positions)} ──[/bold]")
     for pos in positions:
-        console.print(f"  {pos.ticket} | {pos.symbol} | {pos.type} | {pos.volume} lots | P/L: ${pos.profit:.2f}")
+        side = "LONG" if pos.type == 0 else "SHORT"
+        color = "green" if pos.profit >= 0 else "red"
+        console.print(f"  #{pos.ticket} | {pos.symbol} | {side} {pos.volume} lots | SL={pos.sl:.2f} | P/L=[{color}]{pos.profit:+.2f}[/{color}]")
+
+    # Show last 5 sessions from DB
+    import os
+    db_path = "live/data/live_sessions.db"
+    if os.path.exists(db_path):
+        import sqlite3
+        conn = sqlite3.connect(db_path)
+        rows = conn.execute(
+            "SELECT id, mode, started_at, ended_at, timeframe, balance_start, pnl_session FROM sessions ORDER BY id DESC LIMIT 5"
+        ).fetchall()
+        conn.close()
+        if rows:
+            console.print(f"\n[bold]── 5 dernières sessions DB ──[/bold]")
+            for r in rows:
+                status = "actif" if r[3] is None else "terminé"
+                pnl = f"{r[6]:+.2f}" if r[6] is not None else "?"
+                console.print(f"  #{r[0]} [{r[1].upper()}] {r[2][:16]} | {r[4]} | Balance départ: {r[5]} | PnL: {pnl} | {status}")
 
     bridge.disconnect()
 
