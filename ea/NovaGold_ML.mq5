@@ -20,8 +20,15 @@ input double InpKeltnerMultiplier   = 2.0;             // Keltner Multiplier
 input double InpSLMultiplier        = 2.0;             // Stop Loss (ATR mult)
 input double InpBreakevenMultiplier = 1.0;             // Breakeven (ATR mult)
 input double InpTrailingMultiplier  = 1.5;             // Trailing SL (ATR mult)
-input float  InpMLThreshold         = 0.55f;           // ML seuil probabilite [0-1]
+input float  InpMLThreshold         = 0.62f;           // ML seuil probabilite [0-1]
 input string InpModelFile           = "model_M5.onnx"; // Fichier ONNX (dans MQL5/Files/)
+
+// Dynamic trailing parameters based on regime
+input double InpTrailingTrending    = 2.0;             // Trailing when ADX > 25 (trending)
+input double InpTrailingRange       = 0.75;            // Trailing when ADX < 20 (range)
+input double InpADXPeriod           = 14;              // ADX period for trend detection
+input double InpADXHighThreshold    = 25.0;            // ADX > X = trending market
+input double InpADXLowThreshold     = 20.0;            // ADX < X = range market
 
 //--- Globals
 CTrade        trade;
@@ -33,6 +40,7 @@ int    handle_atr;
 int    handle_rsi;
 int    handle_atr_h1;
 int    handle_ema_h1;
+int    handle_adx;
 long   onnx_model  = INVALID_HANDLE;
 datetime last_bar_time = 0;
 
@@ -48,13 +56,14 @@ int OnInit()
    handle_ema   = iMA (_Symbol, PERIOD_M5, InpKeltnerEMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
    handle_atr   = iATR(_Symbol, PERIOD_M5, InpKeltnerATRPeriod);
    handle_rsi   = iRSI(_Symbol, PERIOD_M5, 14, PRICE_CLOSE);
+   handle_adx   = iADX(_Symbol, PERIOD_M5, InpADXPeriod);
    // Indicateurs H1 (pour ema_slope_h1 et atr_ratio_mtf)
    handle_atr_h1 = iATR(_Symbol, PERIOD_H1, InpKeltnerATRPeriod);
    handle_ema_h1 = iMA (_Symbol, PERIOD_H1, InpKeltnerEMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
 
    if(handle_ema   == INVALID_HANDLE || handle_atr    == INVALID_HANDLE ||
-      handle_rsi   == INVALID_HANDLE || handle_atr_h1 == INVALID_HANDLE ||
-      handle_ema_h1 == INVALID_HANDLE)
+      handle_rsi   == INVALID_HANDLE || handle_adx     == INVALID_HANDLE ||
+      handle_atr_h1 == INVALID_HANDLE || handle_ema_h1 == INVALID_HANDLE)
      {
       Print("[Nova ML] Erreur init indicateurs");
       return INIT_FAILED;
@@ -122,14 +131,18 @@ void OnTick()
    double ema_buf[];   ArraySetAsSeries(ema_buf,   true);
    double atr_buf[];   ArraySetAsSeries(atr_buf,   true);
    double rsi_buf[];   ArraySetAsSeries(rsi_buf,   true);
+   double adx_buf[];   ArraySetAsSeries(adx_buf,   true);
    double atr_h1_buf[];ArraySetAsSeries(atr_h1_buf,true);
    double ema_h1_buf[];ArraySetAsSeries(ema_h1_buf,true);
 
    if(CopyBuffer(handle_ema,    0, 1, 3,  ema_buf)    <= 0) return;
    if(CopyBuffer(handle_atr,    0, 1, 2,  atr_buf)    <= 0) return;
    if(CopyBuffer(handle_rsi,    0, 1, 1,  rsi_buf)    <= 0) return;
+   if(CopyBuffer(handle_adx,    0, 0, 2,  adx_buf)    <= 0) return;
    if(CopyBuffer(handle_atr_h1, 0, 0, 2,  atr_h1_buf) <= 0) return;
    if(CopyBuffer(handle_ema_h1, 0, 0, 6,  ema_h1_buf) <= 0) return;
+
+   double adx = adx_buf[0];  // ADX actuel pour détection régime
 
    double close1 = iClose(_Symbol, PERIOD_M5, 1);
    double close2 = iClose(_Symbol, PERIOD_M5, 2);
@@ -219,8 +232,35 @@ void OnTick()
      }
 
    float proba = out_proba[1]; // probabilite TP (class 1)
-   PrintFormat("[Nova ML] Signal %s | proba=%.3f | seuil=%.2f",
-               is_long ? "LONG" : "SHORT", proba, InpMLThreshold);
+
+   // --- Dynamic trailing based on ADX regime ---
+   // ADX > 25 = trending (trailing large), ADX < 20 = range (trailing serré)
+   double dynamic_trailing_mult;
+   double dynamic_breakeven_mult;
+
+   if(adx >= InpADXHighThreshold)
+     {
+      dynamic_trailing_mult = InpTrailingTrending;    // 2.0x ATR
+      dynamic_breakeven_mult = 1.5;                    // BE activé plus tard
+      PrintFormat("[Nova ML] Régime: TENDANCE (ADX=%.1f)", adx);
+     }
+   else if(adx <= InpADXLowThreshold)
+     {
+      dynamic_trailing_mult = InpTrailingRange;       // 0.75x ATR
+      dynamic_breakeven_mult = 0.5;                    // BE activé tôt
+      PrintFormat("[Nova ML] Régime: RANGE (ADX=%.1f)", adx);
+     }
+   else
+     {
+      // Zone intermédiaire - interpolation linéaire
+      double ratio = (adx - InpADXLowThreshold) / (InpADXHighThreshold - InpADXLowThreshold);
+      dynamic_trailing_mult = InpTrailingRange + ratio * (InpTrailingTrending - InpTrailingRange);
+      dynamic_breakeven_mult = 0.5 + ratio * (1.5 - 0.5);
+      PrintFormat("[Nova ML] Régime: TRANSITION (ADX=%.1f)", adx);
+     }
+
+   PrintFormat("[Nova ML] Signal %s | proba=%.3f | seuil=%.2f | Trailing mult=%.2f",
+               is_long ? "LONG" : "SHORT", proba, InpMLThreshold, dynamic_trailing_mult);
 
    if(proba < InpMLThreshold)
      {
@@ -229,18 +269,20 @@ void OnTick()
       return;
      }
 
-   // --- Execution ---
+   // --- Execution avec paramètres dynamiques ---
    if(is_long)
      {
       double sl = sym.Ask() - InpSLMultiplier * atr1;
       if(trade.Buy(InpLotSize, _Symbol, sym.Ask(), sl, 0, "Nova ML LONG"))
-         PrintFormat("[Nova ML] BUY @ %.2f | SL=%.2f | proba=%.3f", sym.Ask(), sl, proba);
+         PrintFormat("[Nova ML] BUY @ %.2f | SL=%.2f | Trailing=%.2fxATR | proba=%.3f",
+                     sym.Ask(), sl, dynamic_trailing_mult, proba);
      }
    else
      {
       double sl = sym.Bid() + InpSLMultiplier * atr1;
       if(trade.Sell(InpLotSize, _Symbol, sym.Bid(), sl, 0, "Nova ML SHORT"))
-         PrintFormat("[Nova ML] SELL @ %.2f | SL=%.2f | proba=%.3f", sym.Bid(), sl, proba);
+         PrintFormat("[Nova ML] SELL @ %.2f | SL=%.2f | Trailing=%.2fxATR | proba=%.3f",
+                     sym.Bid(), sl, dynamic_trailing_mult, proba);
      }
 
    last_bar_time = current_bar;
@@ -256,13 +298,40 @@ void ManageTrailingStops()
    double open_price = pos.PriceOpen();
    double current_sl = pos.StopLoss();
 
+   // Refresh ADX for dynamic regime detection
+   double adx_arr[];
+   ArraySetAsSeries(adx_arr, true);
+   if(CopyBuffer(handle_adx, 0, 0, 1, adx_arr) <= 0) return;
+   double cur_adx = adx_arr[0];
+
    double atr_arr[];
    ArraySetAsSeries(atr_arr, true);
    if(CopyBuffer(handle_atr, 0, 0, 1, atr_arr) <= 0) return;
    double cur_atr = atr_arr[0];
 
-   double be_dist    = InpBreakevenMultiplier * cur_atr;
-   double trail_dist = InpTrailingMultiplier  * cur_atr;
+   // Dynamic multipliers based on ADX regime
+   double be_dist;
+   double trail_dist;
+
+   if(cur_adx >= InpADXHighThreshold)
+     {
+      // Trending market - wider trailing, later breakeven
+      trail_dist = InpTrailingTrending * cur_atr;
+      be_dist = 1.5 * cur_atr;
+     }
+   else if(cur_adx <= InpADXLowThreshold)
+     {
+      // Range market - tighter trailing, earlier breakeven
+      trail_dist = InpTrailingRange * cur_atr;
+      be_dist = 0.5 * cur_atr;
+     }
+   else
+     {
+      // Transition zone - linear interpolation
+      double ratio = (cur_adx - InpADXLowThreshold) / (InpADXHighThreshold - InpADXLowThreshold);
+      trail_dist = (InpTrailingRange + ratio * (InpTrailingTrending - InpTrailingRange)) * cur_atr;
+      be_dist = (0.5 + ratio * (1.5 - 0.5)) * cur_atr;
+     }
 
    if(pos.PositionType() == POSITION_TYPE_BUY)
      {
