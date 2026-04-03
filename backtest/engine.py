@@ -147,6 +147,7 @@ def run_backtest(
             atr_period=config.keltner_atr_period,
             multiplier=config.keltner_multiplier,
             candle_minutes=candle_minutes,
+            keltner_precomputed=True,  # Keltner déjà calculé ligne 124-129
         )
         total_signals += len(signals)
 

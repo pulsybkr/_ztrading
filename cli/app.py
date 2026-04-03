@@ -294,6 +294,7 @@ def train_run(
     train_weeks: int = typer.Option(8, help="Semaines d'entrainement"),
     test_weeks: int = typer.Option(2, help="Semaines de test"),
     output: str = typer.Option(None, help="Fichier modele (defaut: ml/models/model_{TF}.joblib)"),
+    use_ticks: bool = typer.Option(True, help="Utiliser les ticks pour le labeling (plus precis)"),
 ):
     """Entraîner le modèle LightGBM en walk-forward."""
     from data.loader import DataLoader
@@ -303,6 +304,7 @@ def train_run(
     from strategy.keltner import compute_keltner
     from ml.trainer import walk_forward_train, train_final_model, save_model
     from core.types import BacktestConfig
+    import pandas as pd
 
     tf = timeframe.upper()
     if output is None:
@@ -328,11 +330,39 @@ def train_run(
 
     console.print(f"  {len(signals)} signaux détectés")
 
+    # Charger les ticks si disponibles et demandés
+    ticks_df = None
+    if use_ticks:
+        console.print("  Chargement des ticks pour labeling réaliste...")
+        try:
+            # Charger tous les fichiers ticks pour la période
+            from pathlib import Path
+            ticks_dir = Path("data/parquet/ticks")
+            tick_files = sorted(ticks_dir.glob(f"{symbol}_ticks_*.parquet"))
+
+            if tick_files:
+                tick_chunks = []
+                for f in tick_files:
+                    df_tick = pd.read_parquet(f)
+                    df_tick["time"] = pd.to_datetime(df_tick["time"])
+                    # Filtrer par période
+                    mask = (df_tick["time"] >= start) & (df_tick["time"] <= end)
+                    tick_chunks.append(df_tick.loc[mask])
+
+                ticks_df = pd.concat(tick_chunks, ignore_index=True)
+                console.print(f"  [green]{len(ticks_df):,} ticks chargés[/green]")
+            else:
+                console.print("  [yellow]Aucun fichier tick trouvé — fallback sur bougies[/yellow]")
+        except Exception as e:
+            console.print(f"  [yellow]Erreur chargement ticks: {e} — fallback sur bougies[/yellow]")
+            ticks_df = None
+
     config = BacktestConfig(signal_timeframe=tf)
     fold_results = walk_forward_train(
         signals=signals,
         candles_signal=df_signal,
         candles_h1=df_h1,
+        ticks=ticks_df,
         train_weeks=train_weeks,
         test_weeks=test_weeks,
         config=config,

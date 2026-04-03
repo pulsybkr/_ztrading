@@ -16,13 +16,31 @@ def detect_breakouts(df: pd.DataFrame,
                      ema_period: int = 20,
                      atr_period: int = 14,
                      multiplier: float = 2.0,
-                     candle_minutes: int = 5) -> list[Signal]:
+                     candle_minutes: int = 5,
+                     keltner_precomputed: bool = False) -> list[Signal]:
     """
     Détecte les cassures Keltner sur le DataFrame fourni.
-    candle_minutes: durée d'une bougie en minutes (1 pour M1, 5 pour M5, 15 pour M15...)
-                    Utilisé pour décaler le signal à l'ouverture de la prochaine bougie.
+
+    Args:
+        df: DataFrame avec les bougies (OHLC)
+        ema_period: Période EMA pour Keltner
+        atr_period: Période ATR pour Keltner
+        multiplier: Multiplicateur pour les bandes Keltner
+        candle_minutes: Durée d'une bougie en minutes (pour décaler le signal)
+        keltner_precomputed: Si True, suppose que kc_upper/kc_lower/atr sont déjà dans df
+
+    Si keltner_precomputed=True, la fonction suppose que les colonnes suivantes existent :
+    - kc_upper, kc_lower, atr
     """
-    df = compute_keltner(df, ema_period, atr_period, multiplier)
+    if not keltner_precomputed:
+        df = compute_keltner(df, ema_period, atr_period, multiplier)
+    else:
+        # Vérifier que les colonnes requises sont présentes
+        required_cols = ["kc_upper", "kc_lower", "atr"]
+        missing = [c for c in required_cols if c not in df.columns]
+        if missing:
+            raise ValueError(f"keltner_precomputed=True mais colonnes manquantes: {missing}")
+        df = df.copy()  # Éviter de modifier le DataFrame original
     signals = []
 
     in_breakout = False

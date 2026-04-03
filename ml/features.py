@@ -48,14 +48,27 @@ def build_features(signal: Signal, candles_signal: pd.DataFrame,
     else:
         features["keltner_distance"] = (row["kc_lower"] - row["close"]) / row["atr"]
 
-    closes = candles_signal.iloc[max(0, i-14):i+1]["close"]
-    if len(closes) >= 14:
-        delta = closes.diff()
-        gain = delta.where(delta > 0, 0).rolling(14).mean().iloc[-1]
-        loss = (-delta.where(delta < 0, 0)).rolling(14).mean().iloc[-1]
-        features["rsi_14"] = 100 - (100 / (1 + gain / loss)) if loss > 0 else 50
+    # RSI 14 — besoin d'au moins 30 bougies pour un calcul stable
+    # Utiliser un historique plus long pour éviter le biais de départ
+    min_rsi_window = 30
+    if i >= min_rsi_window:
+        closes_rsi = candles_signal.iloc[i - min_rsi_window:i + 1]["close"]
+        delta = closes_rsi.diff()
+        gain = delta.where(delta > 0, 0)
+        loss = (-delta.where(delta < 0, 0))
+
+        # RSI standard avec lissage exponentiel (comme TradingView/MT5)
+        alpha = 1 / 14
+        avg_gain = gain.ewm(alpha=alpha, min_periods=14).mean().iloc[-1]
+        avg_loss = loss.ewm(alpha=alpha, min_periods=14).mean().iloc[-1]
+
+        if avg_loss > 0:
+            rs = avg_gain / avg_loss
+            features["rsi_14"] = 100 - (100 / (1 + rs))
+        else:
+            features["rsi_14"] = 50
     else:
-        features["rsi_14"] = 50
+        features["rsi_14"] = 50  # Pas assez d'historique
 
     if i >= 5:
         price_5_ago = candles_signal.iloc[i - 5]["close"]
