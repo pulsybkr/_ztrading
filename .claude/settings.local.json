@@ -4,7 +4,11 @@
       "Bash(ls:*)",
       "Bash(find C:/Users/pulsy/Pictures/z_trading -name \"*.pyc\" -not -path \"*/venv/*\" -delete)",
       "Bash(find C:/Users/pulsy/Pictures/z_trading -name \"__pycache__\" -not -path \"*/venv/*\" -type d -empty -delete)",
-      "Bash(venv/Scripts/python.exe -m cli.app backtest run --help)"
+      "Bash(venv/Scripts/python.exe -m cli.app backtest run --help)",
+      "Bash(dir /s /b *.py)",
+      "Bash(findstr /v \"venv\")",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
     ]
   }
 }
